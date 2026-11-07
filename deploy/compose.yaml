@@ -1,0 +1,31 @@
+# See README. The mesh address and names come from deploy/.env (see .env.example).
+name: reading-queue
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    # Host networking rather than a published port: Docker publishing bypasses UFW,
+    # and here the app itself binds only the NetBird address. If NetBird is not up
+    # yet at boot the bind fails, the process exits and the restart policy retries.
+    network_mode: host
+    restart: always
+    user: "1000:1000"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      READING_HOST: ${READING_HOST:?set in deploy/.env}
+      READING_PORT: "4321"
+      READING_ALLOWED_HOSTS: ${READING_ALLOWED_HOSTS:?set in deploy/.env}
+      READING_VAULT: /vault
+      READING_APP_DIR: /state
+      TZ: Europe/Copenhagen
+      GIT_AUTHOR_NAME: reading-app
+      GIT_AUTHOR_EMAIL: reading-app@localhost
+      GIT_COMMITTER_NAME: reading-app
+      GIT_COMMITTER_EMAIL: reading-app@localhost
+      GIT_SSH_COMMAND: ssh -i /key/id_ed25519 -o UserKnownHostsFile=/key/known_hosts -o StrictHostKeyChecking=yes
+    volumes:
+      - ../.data/vault:/vault
+      - ../.data/state:/state
+      - ../.data/key:/key:ro

@@ -1,0 +1,12 @@
+{
+  "name": "reading-queue",
+  "private": true,
+  "scripts": {
+    "start": "bun server.ts",
+    "dev": "READING_PORT=4322 bun --watch server.ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "yaml": "^2.8.2"
+  }
+}

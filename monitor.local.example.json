@@ -1,0 +1,8 @@
+{
+  "feeds": {
+    "https://blog.example": "https://blog.example/feed/"
+  },
+  "sitemaps": {
+    "https://www.example.com/blog": { "sitemap": "https://example.com/sitemap.xml", "prefix": "https://example.com/blog/" }
+  }
+}

@@ -1,0 +1,12 @@
+.data
+.git
+.claude
+.cursor
+.playwright-mcp
+node_modules
+test
+tools
+.env
+deploy/.env
+monitor.local.json
+HANDOFF*.md

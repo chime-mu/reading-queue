@@ -1,0 +1,9 @@
+node_modules
+*.log
+.playwright-mcp/
+.data/
+.env
+monitor.local.json
+HANDOFF*.md
+.claude/skills/
+com.michael.reading-queue.plist
