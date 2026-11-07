@@ -4,7 +4,7 @@
 // vanishing after the first card).
 
 import { describe, expect, test } from "bun:test";
-import { initialState, update, view, keymapFor, sessionToSave, PICK_KEYS } from "../public/app.js";
+import { initialState, update, view, keymapFor, sessionToSave, feedbackContext, PICK_KEYS } from "../public/app.js";
 
 const ITEMS = [0, 1, 2].map((i) => ({
   file: `/v/source/item${i}.md`,
@@ -128,11 +128,11 @@ describe("deciding from the library", () => {
   const labels = (s: any) => keymapFor(s).filter((b: any) => b.label).map((b: any) => b.key);
 
   test("only moves the status model allows are offered", () => {
-    expect(labels(onItem("unread"))).toEqual(["s", "d", "f", "q", "y", "Escape"]);
-    expect(labels(onItem("queued"))).toEqual(["d", "f", "Escape"]);
-    expect(labels(onItem("dropped"))).toEqual(["s", "q", "y", "Escape"]);
-    expect(labels(onItem("scanned"))).toEqual(["Escape"]);
-    expect(labels(onItem("read"))).toEqual(["Escape"]);
+    expect(labels(onItem("unread"))).toEqual(["s", "d", "f", "q", "y", "!", "Escape"]);
+    expect(labels(onItem("queued"))).toEqual(["d", "f", "!", "Escape"]);
+    expect(labels(onItem("dropped"))).toEqual(["s", "q", "y", "!", "Escape"]);
+    expect(labels(onItem("scanned"))).toEqual(["!", "Escape"]);
+    expect(labels(onItem("read"))).toEqual(["!", "Escape"]);
   });
 
   test("a decision is not written until confirmed, and targets that item", () => {
@@ -438,5 +438,72 @@ describe("view totality", () => {
       scanState(),
     ];
     for (const s of states) expect(typeof view(s)).toBe("string");
+  });
+});
+
+describe("guide", () => {
+  const homeState = { ...initialState, mode: "home", home: { counts: {}, aging: [], quarantined: [], git: { detail: "" }, streak: "" } };
+  const apply = (s: any, a: any) => update(s, a)[0];
+
+  test("opens from home and goes back", () => {
+    const s = apply(homeState, keymapFor(homeState).find((b: any) => b.key === "g").action);
+    expect(s.mode).toBe("guide");
+    expect(view(s)).toContain("The scan is the reading");
+    expect(apply(s, { type: "closeModel" }).mode).toBe("home");
+  });
+
+  test("through the model, back still returns to the session", () => {
+    const card = { ...initialState, mode: "card", items: ITEMS, intents: [], decisions: [{ item: ITEMS[0], action: "scanned" }], idx: 1 };
+    const model = apply(card, { type: "showModel" });
+    const guide = apply(model, keymapFor(model).find((b: any) => b.key === "g").action);
+    expect(sessionToSave(guide)?.decisions.length).toBe(1); // a reload here keeps the session
+    expect(apply(guide, { type: "closeModel" }).mode).toBe("card");
+  });
+});
+
+describe("feedback", () => {
+  const card = { ...initialState, mode: "card", items: ITEMS, intents: [], idx: 1 };
+  const open = (s: any) => update(s, keymapFor(s).find((b: any) => b.key === "!").action)[0];
+
+  test("every screen you work on offers it", () => {
+    const review = { objects: [{ name: "Thesis - A", type: "thesis", evidenceSinceReview: [], evidenceCount: 0 }], orphans: [] };
+    const screens = [
+      { mode: "home", home: { aging: [] } },
+      { mode: "card" }, { mode: "end" }, { mode: "readpick" }, { mode: "readitem", current: ITEMS[0] },
+      { mode: "library" }, { mode: "libitem", current: ITEMS[0] }, { mode: "review", review },
+      { mode: "orphan", current: ITEMS[0] }, { mode: "done" }, { mode: "model" }, { mode: "guide" }, { mode: "agingview" },
+    ];
+    for (const sc of screens) expect(keymapFor({ ...initialState, ...sc }).some((b: any) => b.key === "!" && b.label)).toBe(true);
+  });
+
+  test("records where you were", () => {
+    expect(feedbackContext(card)).toEqual({ screen: "card", task: "scan", item: "item1" });
+    expect(feedbackContext({ ...initialState, mode: "library" })).toEqual({ screen: "library", task: undefined, item: undefined });
+  });
+
+  test("sending leaves the session untouched", () => {
+    const s = open(card);
+    expect(view(s)).toContain("<textarea");
+    const [sent, fx] = update(s, { type: "promptSubmit", value: "  too small  " });
+    expect(sent.prompt).toBe(null);
+    expect(sent.mode).toBe("card");
+    expect(sent.idx).toBe(1);
+    expect(typeof fx).toBe("function");
+    const saved = update(sent, { type: "feedbackSaved" })[0];
+    expect(view(saved)).toContain("Feedback saved.");
+    expect(view(update(saved, { type: "toggleTests" })[0])).not.toContain("Feedback saved.");
+  });
+
+  test("empty text is not sent", () => {
+    const s = open(card);
+    expect(update(s, { type: "promptSubmit", value: "   " })[0].prompt).not.toBe(null);
+  });
+
+  test("a failed save reopens with the text, and can be sent again", () => {
+    const s = update(card, { type: "feedbackFailed", text: "keep <this>" })[0];
+    expect(view(s)).toContain("keep &lt;this&gt;");
+    const [again, fx] = update(s, { type: "promptSubmit", value: "keep <this>" });
+    expect(again.prompt).toBe(null);
+    expect(typeof fx).toBe("function");
   });
 });

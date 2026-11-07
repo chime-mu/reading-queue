@@ -78,6 +78,16 @@ key). To ship a change, run `docker compose up -d --build` in `deploy/`.
   *active day* is a day with a scan/backlog/read session in `pipeline/run-log.tsv`;
   calendar time doesn't count, so a pause or vacation never wipes the inbox.
 
+## Guide and feedback
+
+The app explains itself: **Guide** on the home screen (`g`) covers how to use it, and **The
+model** (`m`) covers why it works this way. When you change how a session behaves, update the
+guide in `guideView()`, in `public/app.js`, to match.
+
+**Feedback** (`!`, on nearly every screen) appends your note, with the current screen and item,
+to `feedback.jsonl` in `READING_APP_DIR`. It stays on the server and is never committed. See
+"Feedback from the app" in `CLAUDE.md` for how an agent works through it.
+
 ## Write safety
 
 `writer.ts` never re-serializes YAML: line surgery on exactly the owned fields

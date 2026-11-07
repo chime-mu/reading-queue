@@ -58,10 +58,37 @@ const yieldPrompt = {
   then: { type: "stageYield" },
 };
 
+// Available from nearly every screen. A prompt is a layer over the current mode,
+// so sending feedback leaves a session exactly where it was.
+const feedback = {
+  key: "!",
+  label: "feedback",
+  action: {
+    type: "openPrompt",
+    label: "What isn't working, or what would you change?",
+    hint: "The screen and item you're on are saved with it.",
+    multiline: true,
+    then: { type: "sendFeedback" },
+  },
+};
+
+/** Where the app was when feedback was written, so the note can stay short. */
+export function feedbackContext(s) {
+  const item =
+    s.mode === "card"
+      ? s.items[s.idx]
+      : s.mode === "review"
+        ? s.review?.objects?.[s.reviewIdx]
+        : ["readitem", "libitem", "orphan"].includes(s.mode)
+          ? s.current
+          : null;
+  return { screen: s.mode, task: s.mode === "card" || s.mode === "end" ? s.task : undefined, item: item?.name };
+}
+
 // A session's decisions live only in memory until commit, and phones reload
 // tabs freely. This is the part worth keeping across a reload. Nothing is
 // resumed blindly: commit re-checks every item against its snapshot.
-const inSession = (s) => s.mode === "card" || s.mode === "end" || (s.mode === "model" && (s.modelReturn === "card" || s.modelReturn === "end"));
+const inSession = (s) => s.mode === "card" || s.mode === "end" || ((s.mode === "model" || s.mode === "guide") && (s.modelReturn === "card" || s.modelReturn === "end"));
 export function sessionToSave(s) {
   if (!inSession(s) || s.task === "library" || !s.decisions.length) return null;
   const { task, items, idx, decisions, compass, intents, backlogOffset, backlogTotal } = s;
@@ -78,8 +105,9 @@ const actionLabel = (a) => ({ "scanned+yield": "scanned + yield", return: "retur
 export const initialState = {
   mode: "loading", // loading | home | agingview | card | end | committing | done
   //                  readpick | readitem | review | orphan | mint
-  //                  library | libitem | neterror
+  //                  library | libitem | neterror | model | guide
   error: "", // last network failure, shown until the next attempt
+  notice: "", // a one-time confirmation, gone after the next action
   saved: null, // an unfinished session found after a reload (see sessionToSave)
   lib: { q: "", status: "", items: [], total: 0, req: 0 },
   showTests: true,
@@ -132,6 +160,10 @@ const FX = {
   undoLast: () => (d) => post("/api/undo-last").then((data) => d({ type: "undone", data })),
   reviewCommit: (payload) => (d) => post("/api/review/commit", payload).then((data) => d({ type: "reviewCommitted", data })),
   jot: (event) => () => post("/api/journal", event).catch(() => {}),
+  feedback: (text, context) => (d) =>
+    post("/api/feedback", { text, ...context })
+      .then(() => d({ type: "feedbackSaved" }))
+      .catch(() => d({ type: "feedbackFailed", text })),
   library: ({ q, status, req }, offset) => (d) =>
     fetch(`/api/library?${new URLSearchParams({ q, status, offset: String(offset) })}`)
       .then(json)
@@ -150,6 +182,7 @@ const decisionPayload = (d) => ({
 });
 
 export function update(s, a) {
+  if (s.notice && a.type !== "feedbackSaved") s = { ...s, notice: "" };
   switch (a.type) {
     // ---- home ----
     case "loadHome":
@@ -269,8 +302,31 @@ export function update(s, a) {
       return [{ ...s, showTests: !s.showTests }, null];
     case "showModel":
       return [{ ...s, mode: "model", modelReturn: s.mode }, null];
+    case "showGuide":
+      // Opened from the model, "back" still returns to where the model was opened.
+      return [{ ...s, mode: "guide", modelReturn: s.mode === "model" ? s.modelReturn : s.mode }, null];
     case "closeModel":
       return [{ ...s, mode: s.modelReturn ?? "home", modelReturn: null }, null];
+    case "sendFeedback":
+      return [s, FX.feedback(a.text, feedbackContext(s))];
+    case "feedbackSaved":
+      return [{ ...s, notice: "Feedback saved." }, null];
+    case "feedbackFailed":
+      // Never lose what was typed: reopen it, ready to send again.
+      return [
+        {
+          ...s,
+          prompt: {
+            ...feedback.action,
+            label: "Could not save that. The server may be out of reach. Send it again?",
+            placeholder: "",
+            withPicker: false,
+            stage: "text",
+            text: a.text,
+          },
+        },
+        null,
+      ];
     case "stage": {
       const item = s.items[s.idx];
       const d = { item, action: a.action, pull: a.pull, yield: a.yield, for: a.for };
@@ -318,7 +374,7 @@ export function update(s, a) {
     // ---- prompt (a mode of the machine; `then` is a continuation-as-data) ----
     case "openPrompt":
       return [
-        { ...s, prompt: { label: a.label, placeholder: a.placeholder ?? "", withPicker: !!a.withPicker, stage: "text", text: "", then: a.then } },
+        { ...s, prompt: { label: a.label, hint: a.hint, multiline: !!a.multiline, placeholder: a.placeholder ?? "", withPicker: !!a.withPicker, stage: "text", text: "", then: a.then } },
         null,
       ];
     case "promptSubmit": {
@@ -444,7 +500,7 @@ export function keymapFor(s) {
     const p = s.prompt;
     if (p.stage === "text") {
       return [
-        { key: "Enter", label: p.withPicker ? "next: pick target" : "confirm", action: (_s, dom) => ({ type: "promptSubmit", value: dom.inputValue("#prompt-input") }) },
+        { key: "Enter", label: p.withPicker ? "next: pick target" : p.multiline ? "send" : "confirm", action: (_s, dom) => ({ type: "promptSubmit", value: dom.inputValue("#prompt-input") }) },
         { key: "Escape", label: "cancel", action: { type: "promptCancel" } },
         // every other key falls through to the input — by design
       ];
@@ -479,13 +535,22 @@ export function keymapFor(s) {
         ...(s.home?.droppedBacklog ? [{ key: "b", label: "backlog", action: { type: "go", name: "backlog" } }] : []),
         ...(s.home?.undoAvailable ? [{ key: "U", label: "undo last session", action: { type: "undoLast" } }] : []),
         { key: "m", label: "the model", action: { type: "showModel" } },
+        { key: "g", hidden: true, action: { type: "showGuide" } },
+        feedback,
       ];
     }
     case "model":
-      return [{ key: "Escape", label: "back", action: { type: "closeModel" } }];
+      return [
+        { key: "g", label: "user guide", action: { type: "showGuide" } },
+        feedback,
+        { key: "Escape", label: "back", action: { type: "closeModel" } },
+      ];
+    case "guide":
+      return [feedback, { key: "Escape", label: "back", action: { type: "closeModel" } }];
     case "library":
       return [
         { key: "Enter", label: "search", action: { type: "libSearch" } },
+        feedback,
         { key: "Escape", label: "home", action: { type: "loadHome" } },
       ];
     case "libitem": {
@@ -500,6 +565,7 @@ export function keymapFor(s) {
       return [
         ...moves,
         { key: "o", hidden: true, action: { type: "openSource" } },
+        feedback,
         { key: "Escape", label: "back", action: { type: "libBack" } },
       ];
     }
@@ -508,6 +574,7 @@ export function keymapFor(s) {
     case "agingview":
       return [
         { key: "Enter", label: "accept all", action: { type: "acceptAging" } },
+        feedback,
         { key: "Escape", label: "back", action: { type: "loadHome" } },
       ];
     case "card": {
@@ -524,6 +591,8 @@ export function keymapFor(s) {
         { key: "u", label: "undo", action: { type: "unstage" } },
         { key: "?", label: s.showTests ? "hide lenses" : "show lenses", action: { type: "toggleTests" } },
         { key: "m", label: "model", action: { type: "showModel" } },
+        { key: "g", hidden: true, action: { type: "showGuide" } },
+        feedback,
         { key: "Escape", label: "end", action: { type: "endSession" } },
       ];
     }
@@ -531,6 +600,7 @@ export function keymapFor(s) {
       return [
         { key: "Enter", label: "commit", action: { type: "commit" } },
         { key: "u", label: "remove last", action: { type: "unstage" } },
+        feedback,
         s.task === "library"
           ? { key: "Escape", label: "cancel", action: { type: "libBack" } }
           : {
@@ -547,6 +617,8 @@ export function keymapFor(s) {
         { key: "ArrowUp", hidden: true, action: { type: "readSel", delta: -1 } },
         { key: "Enter", label: "open", action: { type: "readOpen" } },
         { key: "m", label: "model", action: { type: "showModel" } },
+        { key: "g", hidden: true, action: { type: "showGuide" } },
+        feedback,
         { key: "Escape", label: "home", action: { type: "loadHome" } },
       ];
     case "readitem":
@@ -563,6 +635,7 @@ export function keymapFor(s) {
           }),
         },
         { key: "d", label: "drop after reading", action: { type: "dropAfterReading" } },
+        feedback,
         { key: "Escape", label: "back", action: { type: "readBack" } },
       ];
     case "review":
@@ -570,6 +643,7 @@ export function keymapFor(s) {
         { key: "c", label: "continue", action: { type: "verdict", action: "continue" } },
         { key: "x", label: "close", action: { type: "verdict", action: "close" } },
         { key: "k", label: "kill", action: { type: "verdict", action: "kill" } },
+        feedback,
         { key: "Escape", label: "end review", action: { type: "loadHome" } },
       ];
     case "orphan":
@@ -586,6 +660,7 @@ export function keymapFor(s) {
           }),
         },
         { key: "i", label: "return to inbox", action: { type: "orphanReturn" } },
+        feedback,
         { key: "Escape", label: "skip to minting", action: { type: "toMint" } },
       ];
     case "mint":
@@ -609,8 +684,8 @@ export function keymapFor(s) {
       ];
     case "done":
       return s.task === "library"
-        ? [{ key: "Enter", label: "back to library", action: { type: "openLibrary" } }]
-        : [{ key: "Enter", label: "home", action: { type: "loadHome" } }];
+        ? [{ key: "Enter", label: "back to library", action: { type: "openLibrary" } }, feedback]
+        : [{ key: "Enter", label: "home", action: { type: "loadHome" } }, feedback];
     default:
       return [];
   }
@@ -645,9 +720,13 @@ function promptView(s) {
           )
           .join("")}</ol>`
       : "";
+  const field = p.multiline
+    ? `<textarea id="prompt-input" rows="5" enterkeyhint="send">${esc(p.text)}</textarea>`
+    : `<input id="prompt-input" type="text" enterkeyhint="done" placeholder="${esc(p.placeholder)}" value="${esc(p.text)}" ${p.stage === "pick" ? "disabled" : ""} />`;
   return `<div class="overlay"><div class="prompt">
     <label>${esc(p.label)}</label>
-    <input id="prompt-input" type="text" enterkeyhint="done" placeholder="${esc(p.placeholder)}" value="${esc(p.text)}" ${p.stage === "pick" ? "disabled" : ""} />
+    ${field}
+    ${p.hint ? `<div class="hint">${esc(p.hint)}</div>` : ""}
     ${picker}
     ${keybar(keymapFor(s))}
   </div></div>`;
@@ -673,6 +752,7 @@ function homeView(s) {
       <span class="k">v</span></button>
     <button class="due" data-action='{"type":"openLibrary"}'>Library — search and browse everything.<span class="k">l</span></button>
     ${st.droppedBacklog ? `<button class="due dim" data-action='{"type":"go","name":"backlog"}'>Backlog — ${st.droppedBacklog} amnestied items, browsable when curiosity strikes. Optional, finite.<span class="k">b</span></button>` : ""}
+    <button class="due dim" data-action='{"type":"showGuide"}'>Guide — what this is and how to use it.<span class="k">g</span></button>
     <div class="homeline">${esc(st.streak)}</div>
     <div class="homeline quiet" style="font-size:0.8rem">git: ${esc(st.git.detail)}</div>`;
 }
@@ -862,6 +942,137 @@ function modelView() {
   </div>`;
 }
 
+// Keys are written next to the button's label because touch screens hide <kbd>:
+// the sentence has to read correctly either way.
+function guideView() {
+  return `<div class="model guide">
+    <div class="eyebrow">GUIDE — what this is and how to use it</div>
+
+    <h2>What this is</h2>
+    <p>This app is where you decide what the things you save deserve. Links you capture, and
+    new posts from the sources you follow, become short summary pages in your vault. The app
+    shows you those summaries and asks for a decision on each.</p>
+    <p><strong>The scan is the reading.</strong> For most items the summary is all the value
+    there is, so marking one <span class="act-scanned">scanned</span> is a success, not a
+    postponement. A few items earn a deep read, and for those you say what the read would
+    change. Dropping loses nothing, because every page stays searchable.</p>
+    <p class="quiet">This guide covers how to use the app. <em>The model</em>, on the home
+    screen, covers why it works this way.</p>
+
+    <h2>The rhythm</h2>
+    <ul>
+      <li><strong>Daily:</strong> scan the inbox, at most 15 items, oldest first.</li>
+      <li><strong>When you have time:</strong> read something you queued.</li>
+      <li><strong>In the last five days of the month:</strong> do the monthly review.</li>
+      <li><strong>Any time:</strong> search the library, or browse the backlog if you're curious.</li>
+    </ul>
+    <p>The home screen shows what's due. A dimmed row just means nothing is pressing, and you
+    can still open it. On a keyboard, every action has the key shown beside it. On a touch
+    screen, use the buttons at the bottom.</p>
+
+    <h2>Scan</h2>
+    <p>You get one card at a time. Decide from the summary:</p>
+    <ul class="keys">
+      <li><kbd>s</kbd> <strong>scanned</strong>: the summary was enough. This is the usual answer.</li>
+      <li><kbd>d</kbd> <strong>drop</strong>: not for you.</li>
+      <li><kbd>f</kbd> <strong>fun</strong>: it's for pleasure, and you owe no justification.</li>
+      <li><kbd>q</kbd> <strong>queue</strong>: worth a deep read. You must answer “what would the
+      full read change?”. “Fun — weekend” is a valid answer.</li>
+      <li><kbd>y</kbd> <strong>yield</strong>: scanned, and the summary gave you something worth
+      keeping. Write it in one line.</li>
+      <li><kbd>u</kbd> <strong>undo</strong>: take back your last decision.</li>
+      <li><kbd>esc</kbd> <strong>end</strong>: stop early and go to the session review.</li>
+    </ul>
+    <p>Queue and yield then offer a list of your projects and theses. Choosing one is optional.
+    A yield line is added to the Evidence of whichever you choose.</p>
+    <p>To see the full piece, tap “original” on the card, or press <code>o</code> on a keyboard.
+    The questions under the card are your lenses. The “hide lenses” button hides them, or
+    <code>?</code> on a keyboard.</p>
+
+    <h2>Session review: when things are saved</h2>
+    <p><strong>A scan writes nothing until you confirm it.</strong> The session review lists your
+    decisions, and <kbd>enter</kbd> <strong>commit</strong> saves them. If the page reloads,
+    which phones do often, the home screen offers to resume your session.</p>
+
+    <h2>Read</h2>
+    <p>Queued items are grouped by what they serve. Opening one shows the reason you gave at
+    the top, so you read with that question in mind.</p>
+    <ul class="keys">
+      <li><kbd>o</kbd> <strong>open source</strong>: go to the original.</li>
+      <li><kbd>enter</kbd> <strong>finished</strong>: write what it actually gave you. This is
+      required, and it goes into the Evidence of the project or thesis the item serves.</li>
+      <li><kbd>d</kbd> <strong>drop after reading</strong>: it wasn't worth keeping.</li>
+    </ul>
+    <p><strong>These are saved immediately</strong>, with no session review.</p>
+
+    <h2>Library</h2>
+    <p>Search titles, authors and summaries, and filter by status. Browsing changes nothing. You
+    can also decide on an item from here, which goes through the session review like a scan. Which
+    decisions are offered depends on the item's status: finished items offer none. Library
+    decisions don't count as an active day.</p>
+
+    <h2>Backlog</h2>
+    <p>Items that were dropped in an amnesty or aged out, 20 at a time, newest first. It's
+    optional and has an end. <strong>Leave dropped</strong> writes nothing. The other choices
+    rescue an item: as scanned, to the queue, or with a yield.</p>
+
+    <h2>Monthly review</h2>
+    <p>You walk through each active thesis and project, seeing the evidence added since the last
+    review, and give a verdict:</p>
+    <ul class="keys">
+      <li><kbd>c</kbd> <strong>continue</strong>: keep it going.</li>
+      <li><kbd>x</kbd> <strong>close</strong>: a thesis goes dormant, a project is shipped.</li>
+      <li><kbd>k</kbd> <strong>kill</strong>: a thesis is killed, a project is abandoned.</li>
+    </ul>
+    <p>Queued items whose project or thesis is gone come next: reassign them or return them to the
+    inbox. Last, you can create next month's project, up to the limit of three active. Nothing is
+    saved until the final commit, so ending the review early discards it. With no active thesis
+    or project, there's nothing to walk through, and the review goes straight back home.</p>
+
+    <h2>Aging</h2>
+    <p>Items you never decide on age out, but never silently. The home screen tells you and waits:</p>
+    <ul>
+      <li><strong>Unread</strong> for more than 14 active days: dropped.</li>
+      <li><strong>Queued</strong> for more than 30 active days, without an active project: back to the inbox.</li>
+    </ul>
+    <p>An <em>active day</em> is a day you ran a scan, backlog or read session, so a holiday ages
+    nothing. You can <strong>accept</strong> all of them, <strong>view</strong> the list, or
+    <strong>ignore</strong> it for now. On a keyboard, while this notice is showing,
+    <code>v</code> views the aged items rather than opening the review.</p>
+
+    <h2>Undo</h2>
+    <p><strong>Undo last session</strong> appears on the home screen and works for 24 hours. It
+    restores the fields on each item. A yield line already added to a thesis or project stays
+    there, so remove that by hand if you need to. It also won't overwrite an item that has
+    changed since.</p>
+
+    <h2>Where your decisions go</h2>
+    <p>Decisions are saved to the pages in your vault, then committed and pushed with git. New
+    pages arrive the same way. The app pulls in the background each time the home screen loads,
+    so a new page can take one more visit to appear. The <code>git:</code> line on the home screen
+    shows how the last pull went. A failed pull doesn't stop you working.</p>
+    <p>New links don't start here. You capture them with the share sheet, and they appear after
+    the capture pipeline has processed them.</p>
+
+    <h2>If something looks wrong</h2>
+    <ul>
+      <li><strong>“Skipped — changed elsewhere”:</strong> another device changed that item during
+      your session. The other change was kept.</li>
+      <li><strong>“Quarantined”:</strong> a file has git conflict markers and stays out of the queue
+      until it's fixed in git.</li>
+      <li><strong>The app won't load:</strong> it only answers over your private network, so check
+      that NetBird is connected on this device. There is no offline mode.</li>
+    </ul>
+
+    <h2>Feedback</h2>
+    <p>If something bothers you while you're using the app, press <kbd>!</kbd> <strong>feedback</strong>,
+    which is available on nearly every screen, and say so in your own words. The screen and the item
+    you're on are saved with it, and your session stays exactly where it was. Claude can read these
+    notes on the server, but it doesn't check on its own: ask it to go through your feedback, and it
+    will propose or make the changes you asked for.</p>
+  </div>`;
+}
+
 function doneView(s) {
   const r = s.result ?? { title: "", lines: [], git: "" };
   return `
@@ -908,6 +1119,8 @@ export function view(s) {
                         ? mintView(s)
                         : s.mode === "model"
                           ? modelView()
+                          : s.mode === "guide"
+                            ? guideView()
                           : s.mode === "library"
                             ? libraryView(s)
                             : s.mode === "libitem"
@@ -916,7 +1129,8 @@ export function view(s) {
                                 ? `<div class="eyebrow">OFFLINE</div>`
                                 : doneView(s);
   const error = s.error ? `<div class="banner warn">${esc(s.error)}</div>` : "";
-  return `<div class="screen">${error}${inner}</div>${s.prompt ? "" : keybar(keymapFor(s))}${promptView(s)}`;
+  const notice = s.notice ? `<div class="banner">${esc(s.notice)}</div>` : "";
+  return `<div class="screen">${error}${notice}${inner}</div>${s.prompt ? "" : keybar(keymapFor(s))}${promptView(s)}`;
 }
 
 // ---------------------------------------------------------------- boot
@@ -973,11 +1187,16 @@ if (typeof document !== "undefined") {
   const screenKey = (s) => `${s.mode}:${s.idx}:${s.reviewIdx}:${s.current?.file ?? ""}`;
   let lastScreen = "";
   let libraryScroll = 0;
+  let lastPrompt = null;
 
   function render() {
     const wasLibItem = lastScreen.startsWith("libitem:");
     const hadSearchFocus = document.activeElement?.id === "lib-q";
+    // A result arriving redraws the screen, which must not wipe what is being typed.
+    const typed = state.prompt === lastPrompt ? document.getElementById("prompt-input")?.value : undefined;
+    lastPrompt = state.prompt;
     app.innerHTML = view(state);
+    if (typed !== undefined) document.getElementById("prompt-input").value = typed;
     app.querySelectorAll("[data-action]").forEach((el) =>
       el.addEventListener("click", () => dispatch(JSON.parse(el.dataset.action))),
     );
@@ -1026,6 +1245,7 @@ if (typeof document !== "undefined") {
 
   document.addEventListener("keydown", (e) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return; // browser shortcuts stay the browser's
+    if (e.key === "Enter" && e.shiftKey && e.target.tagName === "TEXTAREA") return; // a new line
     // In a bare input (mint, library search), only Enter/Escape are ours.
     if (!state.prompt && e.target.tagName === "INPUT" && e.key !== "Enter" && e.key !== "Escape") return;
     // A focused list row or chip: Enter means that element, not the screen's binding.

@@ -21,6 +21,7 @@ import { applyDecision, applyAgingDrop, applyAgingReturn, applyUndo, compassPath
 import { setCompassField } from "./writer";
 import { journal, logRun, readRunLog, lastUndoSession, recordUndo } from "./journal";
 import { pullRebase, commitAndPush } from "./git";
+import { appendFeedback, parseFeedback } from "./feedback";
 
 function todayISO(): string {
   const d = new Date();
@@ -198,6 +199,13 @@ const routes: Record<string, (req: Request) => Promise<Response>> = {
   "POST /api/journal": async (req) => {
     await journal(await req.json());
     return Response.json({ ok: true });
+  },
+
+  "POST /api/feedback": async (req) => {
+    const fb = parseFeedback(await req.json().catch(() => null));
+    if (!fb) return Response.json({ error: "feedback needs text, at most 5000 characters" }, { status: 400 });
+    const { id } = await appendFeedback(fb);
+    return Response.json({ ok: true, id });
   },
 
   "POST /api/commit": async (req) => {

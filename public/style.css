@@ -231,7 +231,8 @@ a.src:hover { text-decoration: underline; }
   width: min(560px, 92vw);
 }
 .prompt label { display: block; font-size: 1.05rem; margin-bottom: 12px; }
-.prompt input {
+.prompt textarea { display: block; resize: vertical; line-height: 1.4; }
+.prompt input, .prompt textarea {
   width: 100%;
   font: 1rem var(--serif);
   color: var(--ink);
@@ -240,7 +241,7 @@ a.src:hover { text-decoration: underline; }
   border-radius: 8px;
   padding: 10px 12px;
 }
-.prompt input:focus { outline: none; border-color: var(--lamp); }
+.prompt input:focus, .prompt textarea:focus { outline: none; border-color: var(--lamp); }
 .prompt ol { list-style: none; margin: 16px 0 0; padding: 0; font-size: 0.95rem; }
 .prompt ol li { padding: 5px 0; }
 .prompt ol .n { font-family: var(--mono); color: var(--lamp); margin-right: 10px; }
@@ -265,6 +266,9 @@ a.src:hover { text-decoration: underline; }
 .model h2:first-of-type { margin-top: 0.4rem; }
 .model p { margin: 0 0 0.9em; font-size: 0.98rem; }
 .model code { font-family: var(--mono); font-size: 0.85em; color: var(--ink); }
+.guide ul { margin: 0 0 0.9em; padding-left: 1.2em; font-size: 0.98rem; }
+.guide li { margin: 0.35em 0; }
+.guide ul.keys { list-style: none; padding-left: 0; }
 
 @media (max-width: 480px) {
   #app { padding-top: 5vh; }
