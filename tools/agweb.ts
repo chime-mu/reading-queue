@@ -1,6 +1,8 @@
 // agweb reader for the processor and the monitor: a WebKit browser driven from the shell
 // (https://github.com/paul-nameless/agweb, macOS 26+, app in /Applications). Its named profile
-// `reading` keeps the logins (Substack, X, LinkedIn, Medium) across sessions.
+// `reading` keeps the logins (Substack, X, LinkedIn, Medium) across sessions. A domain that must be
+// read with another account gets its own profile: `agwebProfiles` in the gitignored
+// monitor.local.json maps domain → profile (subdomains included); the crawl routes each item by it.
 //
 //   bun tools/agweb.ts login-check [domain …]   which account each service / Substack domain is on
 //   bun tools/agweb.ts crawl <work> <from> <to> read readlist items n=from…to into <work>/<n>.txt + .json
@@ -12,6 +14,24 @@ import { $ } from "bun";
 
 export const AGWEB = process.env.AGWEB_BIN ?? "/Applications/Agweb.app/Contents/Helpers/agweb";
 export const PROFILE = process.env.AGWEB_PROFILE ?? "reading";
+
+/** The profile for a URL: the longest `map` entry matching its host (www. ignored), else `fallback`. */
+export function profileFor(url: string, map: Record<string, string>, fallback = PROFILE): string {
+  let host: string;
+  try { host = new URL(url).hostname.replace(/^www\./, ""); } catch { return fallback; }
+  let best = "", prof = fallback;
+  for (const [d, p] of Object.entries(map)) {
+    const dd = d.replace(/^www\./, "");
+    if ((host === dd || host.endsWith("." + dd)) && dd.length > best.length) { best = dd; prof = p; }
+  }
+  return prof;
+}
+
+async function profileMap(): Promise<Record<string, string>> {
+  const f = Bun.file(`${import.meta.dir}/../monitor.local.json`);
+  if (!(await f.exists())) return {};
+  return (await f.json()).agwebProfiles ?? {};
+}
 
 /** The value of an `eval` reply: the line after "### Result", JSON-decoded (twice if the page returned a JSON string). */
 export function parseEval(out: string): unknown {
@@ -35,9 +55,10 @@ export function cleanText(out: string): string {
   return body.join("\n").trim();
 }
 
-const ws = (w: string) => ["-w", w, "-p", PROFILE];
+// A workspace name carries its profile after "@" (rq-crawl-1@substack-old); plain names use PROFILE.
 async function ag(w: string, ...args: string[]): Promise<string> {
-  const r = await $`${AGWEB} ${ws(w)} ${args}`.nothrow().quiet();
+  const [name, prof = PROFILE] = w.split("@");
+  const r = await $`${AGWEB} ${["-w", `${name}-${prof}`, "-p", prof]} ${args}`.nothrow().quiet();
   return r.stdout.toString() + r.stderr.toString();
 }
 async function load(w: string, url: string, settle = 3500) {
@@ -68,11 +89,15 @@ const META_JS = `() => {
 
 async function crawl(work: string, from: number, to: number) {
   const list: any[] = await Bun.file(`${work}/readlist.json`).json();
-  const w = `rq-crawl-${from}`;
-  await ag(w, "open");
+  const map = process.env.AGWEB_PROFILE ? {} : await profileMap();
+  const opened = new Set<string>();
   for (const it of list) {
     if (it.n < from || it.n > to) continue;
     const meta: any = { ...it };
+    const prof = profileFor(it.target || it.url, map);
+    const w = `rq-crawl-${from}@${prof}`;
+    if (!opened.has(w)) { await ag(w, "open"); opened.add(w); }
+    if (prof !== PROFILE) meta.profile = prof;
     try {
       await load(w, it.target || it.url);
       Object.assign(meta, await evaluate(w, META_JS));
@@ -85,11 +110,11 @@ async function crawl(work: string, from: number, to: number) {
       meta.error = String(e).slice(0, 200);
     }
     await Bun.write(`${work}/${it.n}.json`, JSON.stringify(meta, null, 1));
-    const paid = meta.audience === "only_paid" ? ` paid handle=${meta.handle}` : "";
+    const paid = meta.audience === "only_paid" ? ` paid handle=${meta.handle}${meta.profile ? ` profile=${meta.profile}` : ""}` : "";
     console.log(`${meta.n} ${meta.chars ?? "ERR"} ${meta.paywall ? "PAYWALL " : ""}${String(meta.h1 || meta.title || meta.url).slice(0, 60)}${paid}${meta.attachedArticle ? " → " + meta.attachedArticle : ""}${meta.error ? " :: " + meta.error : ""}`);
     await Bun.sleep(4000);
   }
-  await ag(w, "close");
+  for (const w of opened) await ag(w, "close");
 }
 
 const SERVICES = [

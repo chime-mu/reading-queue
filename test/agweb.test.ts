@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { parseEval, cleanText } from "../tools/agweb";
+import { parseEval, cleanText, profileFor } from "../tools/agweb";
 
 test("parseEval decodes a JSON string returned by the page", () => {
   const out = '### Result\n"{\\"handle\\":\\"someone\\",\\"n\\":3}"\n### Page\n- URL: https://blog.example/p/x\n';
@@ -18,4 +18,12 @@ test("cleanText drops the page header and the main-content note", () => {
 
 test("cleanText stops at a trailing page block", () => {
   expect(cleanText("### Result\n# A post\n\nEnd.\n### Page\n- URL: https://blog.example/p/x\n")).toBe("# A post\n\nEnd.");
+});
+
+test("profileFor picks the longest matching domain and ignores www.", () => {
+  const map = { "blog.example": "other", "deep.blog.example": "third" };
+  expect(profileFor("https://www.blog.example/p/x", map, "main")).toBe("other");
+  expect(profileFor("https://news.deep.blog.example/p/x", map, "main")).toBe("third");
+  expect(profileFor("https://notblog.example/p/x", map, "main")).toBe("main");
+  expect(profileFor("not a url", map, "main")).toBe("main");
 });
