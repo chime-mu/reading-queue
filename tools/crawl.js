@@ -4,7 +4,8 @@
 // Reads  <work>/readlist.json : [{ n, url, source?, title?, date?, time?, key? }]
 //        <work>/range.json    : [from, to]  — inclusive n range for this batch (10–12 per run)
 // Writes <work>/<n>.txt       : the page text (never passes through the conversation)
-//        <work>/<n>.json      : meta — finalUrl, h1, time, paywall, byline, chars, attachedArticle
+//        <work>/<n>.json      : readlist item + finalUrl, h1, published, paywall, byline, chars, attachedArticle
+//                               (`published` is the page's own date; `time` stays the capture time)
 //
 // Extraction order: .available-content (Substack) → article → main → body. Substack
 // notes are cut at "Related notes" and report the first attached /p/ link, so the
@@ -30,11 +31,11 @@ async (page) => {
         const isNote = /\/note\/[cp]-/.test(location.pathname) && !document.querySelector('.available-content');
         if (isNote) { const i = text.indexOf('Related notes'); if (i > 0) text = text.slice(0, i); }
         const h1 = document.querySelector('h1')?.innerText.trim() || '';
-        const time = document.querySelector('time')?.getAttribute('datetime') || '';
+        const published = document.querySelector('time')?.getAttribute('datetime') || '';
         const paywall = !!document.querySelector('.paywall, [class*="paywall"], [data-testid="paywall"]');
         const byline = Array.from(document.querySelectorAll('a[href*="/@"], [rel="author"], .author-name, [class*="byline"] a')).map(a => a.innerText.trim()).filter(t => t && t.length < 60).slice(0, 3);
         const art = isNote ? Array.from(document.querySelectorAll('a[href*="/p/"]')).find(a => a.innerText.trim()) : null;
-        return { finalUrl: location.href.split('?')[0], h1, time, paywall, byline, chars: text.length, text, selector: el.className || el.tagName, attachedArticle: art ? art.getAttribute('href').split('?')[0] : '' };
+        return { finalUrl: location.href.split('?')[0], h1, published, paywall, byline, chars: text.length, text, selector: el.className || el.tagName, attachedArticle: art ? art.getAttribute('href').split('?')[0] : '' };
       });
       await save(`${it.n}.txt`, r.text);
       delete r.text;

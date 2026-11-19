@@ -78,7 +78,7 @@ const META_JS = `() => {
   return JSON.stringify({
     finalUrl: location.href.split('?')[0],
     h1: (document.querySelector('h1.post-title') || document.querySelector('article h1') || document.querySelector('h1'))?.innerText.trim() || document.title,
-    time: document.querySelector('time')?.getAttribute('datetime') || p?.post?.post_date || '',
+    published: document.querySelector('time')?.getAttribute('datetime') || p?.post?.post_date || '',
     paywall: !!document.querySelector('.paywall:not(.paywall-jump), [data-testid="paywall"]'),
     audience: p?.post?.audience || '',
     handle: p ? (p.user?.handle || 'none') : '',
