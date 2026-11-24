@@ -119,7 +119,7 @@ async function crawl(work: string, from: number, to: number) {
 
 const SERVICES = [
   { service: "substack", url: "https://substack.com/home", js: `() => window._preloads?.user?.handle || 'LOGGED OUT'` },
-  { service: "x", url: "https://x.com/home", js: `() => /login|flow/.test(location.href) || !document.querySelector('a[data-testid="AppTabBar_Home_Link"]') ? 'LOGGED OUT' : 'logged in'` },
+  { service: "x", url: "https://x.com/home", js: `() => /login|flow/.test(location.href) || !/(^|; )twid=/.test(document.cookie) ? 'LOGGED OUT' : 'logged in'` },
   { service: "linkedin", url: "https://www.linkedin.com/feed/", js: `() => /login|authwall|signup/.test(location.href) ? 'LOGGED OUT' : 'logged in'` },
   { service: "medium", url: "https://medium.com/me", js: `() => /signin|sign-in|login/.test(location.href) ? 'LOGGED OUT' : 'logged in'` },
 ];
